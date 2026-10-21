@@ -1,0 +1,24 @@
+[package]
+name = "tackle"
+version = "0.1.0"
+edition = "2024"
+description = "Tackle - live game-editor broker as an MCP stdio server (stage U0: Unity spike)"
+
+[dependencies]
+rmcp = { version = "3.3", features = ["server", "macros", "schemars", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+thiserror = "2"
+
+[profile.release]
+overflow-checks = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dev-dependencies]
+tempfile = "3"
