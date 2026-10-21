@@ -1,6 +1,10 @@
 ---
 repo: tackle
 updated: 2026-10-21
+tracker_generation: 1
+memory_home: .ai/memory/
+attention_board: trackers
+idea_id: PENDING-REGISTER
 ---
 
 # tackle — master checklist
