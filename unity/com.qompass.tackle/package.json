@@ -1,0 +1,7 @@
+{
+  "name": "com.qompass.tackle",
+  "version": "0.1.0",
+  "displayName": "Tackle Editor Bridge",
+  "description": "Connects the Unity Editor to the tackle MCP server over an authenticated loopback WebSocket. Stage U0 spike: read-only editor_state and scene_hierarchy.",
+  "unity": "6000.6"
+}
