@@ -255,3 +255,49 @@ async fn adv_reply_shape_violations_are_protocol_errors() {
         );
     }
 }
+
+#[tokio::test]
+async fn ok_call_with_args_carries_the_args_object() {
+    let (bridge, address) = start().await;
+    let mut editor = connect_authorized(address).await;
+    wait_connected(&bridge, true).await;
+    let call = tokio::spawn({
+        let bridge = bridge.clone();
+        async move {
+            bridge
+                .call_with_args("scene_hierarchy", json!({"offset": 2, "limit": 10}))
+                .await
+        }
+    });
+    let command = next_command(&mut editor).await;
+    assert_eq!(
+        command,
+        json!({"id": 1, "command": "scene_hierarchy", "args": {"offset": 2, "limit": 10}})
+    );
+    send_text(
+        &mut editor,
+        json!({"id": 1, "ok": true, "result": {"nodeCount": 0}}).to_string(),
+    )
+    .await;
+    assert_eq!(call.await.expect("join").expect("call ok")["nodeCount"], 0);
+}
+
+#[tokio::test]
+async fn ok_call_without_args_keeps_the_u0_frame_shape() {
+    let (bridge, address) = start().await;
+    let mut editor = connect_authorized(address).await;
+    wait_connected(&bridge, true).await;
+    let call = tokio::spawn({
+        let bridge = bridge.clone();
+        async move { bridge.call("editor_state").await }
+    });
+    let command = next_command(&mut editor).await;
+    assert_eq!(command, json!({"id": 1, "command": "editor_state"}));
+    assert!(command.get("args").is_none(), "no args key: {command}");
+    send_text(
+        &mut editor,
+        json!({"id": 1, "ok": true, "result": 1}).to_string(),
+    )
+    .await;
+    assert_eq!(call.await.expect("join"), Ok(json!(1)));
+}

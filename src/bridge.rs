@@ -14,6 +14,8 @@
 //!   blocked. Each call waits at most [`CALL_DEADLINE`].
 //! - Frames above [`MESSAGE_BYTES_MAX`] end the session. A reply that is not
 //!   the expected JSON shape is a protocol error and ends the session.
+//! - U1: commands may carry an `"args"` object (pagination, paths, limits).
+//!   Calls without arguments send the U0 frame shape with no `"args"` key.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,6 +65,9 @@ pub enum CallError {
 
 struct Pending {
     command: String,
+    /// Editor arguments for the command, when the caller supplied any.
+    /// `None` sends the U0 frame shape (`{"id","command"}` only).
+    args: Option<Value>,
     reply: oneshot::Sender<Result<Value, CallError>>,
 }
 
@@ -137,6 +142,17 @@ impl Bridge {
 
     /// Send one command to the connected editor and wait for its result.
     pub async fn call(&self, command: &str) -> Result<Value, CallError> {
+        self.call_with(command, None).await
+    }
+
+    /// Send one command with editor arguments and wait for its result.
+    /// `Some(args)` adds an `"args"` object to the wire frame; `None`
+    /// preserves the U0 frame shape with no `"args"` key.
+    pub async fn call_with_args(&self, command: &str, args: Value) -> Result<Value, CallError> {
+        self.call_with(command, Some(args)).await
+    }
+
+    async fn call_with(&self, command: &str, args: Option<Value>) -> Result<Value, CallError> {
         let sender = match self.slot().as_ref() {
             Some(session) => session.sender.clone(),
             None => return Err(CallError::NoEditor),
@@ -144,6 +160,7 @@ impl Bridge {
         let (reply, receive) = oneshot::channel();
         let pending = Pending {
             command: command.to_string(),
+            args,
             reply,
         };
         sender.try_send(pending).map_err(|error| match error {
@@ -251,7 +268,8 @@ async fn run_session(
                     return "replaced".to_string();
                 };
                 request_id = request_id.checked_add(1).expect("u64 request ids do not wrap");
-                let result = exchange(&mut socket, request_id, &pending.command).await;
+                let result =
+                    exchange(&mut socket, request_id, &pending.command, &pending.args).await;
                 let fatal = match &result {
                     Err(CallError::Disconnected) => Some("disconnected mid-call".to_string()),
                     Err(CallError::Protocol(reason)) => Some(format!("protocol violation: {reason}")),
@@ -282,8 +300,13 @@ async fn exchange(
     socket: &mut WebSocketStream<TcpStream>,
     request_id: u64,
     command: &str,
+    args: &Option<Value>,
 ) -> Result<Value, CallError> {
-    let frame = serde_json::json!({ "id": request_id, "command": command }).to_string();
+    let mut frame = serde_json::json!({ "id": request_id, "command": command });
+    if let Some(args) = args {
+        frame["args"] = args.clone();
+    }
+    let frame = frame.to_string();
     if socket.send(Message::text(frame)).await.is_err() {
         return Err(CallError::Disconnected);
     }

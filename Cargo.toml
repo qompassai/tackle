@@ -1,8 +1,8 @@
 [package]
 name = "tackle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Tackle - live game-editor broker as an MCP stdio server (stage U0: Unity spike)"
+description = "Tackle - live game-editor broker as an MCP stdio server (stage U1: read core)"
 
 [dependencies]
 rmcp = { version = "3.3", features = ["server", "macros", "schemars", "transport-io"] }

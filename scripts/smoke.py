@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Stdio smoke: drive the real tackle binary as an MCP client (BRIEF-U0).
+"""Stdio smoke: drive the real tackle binary as an MCP client (U1 read core).
 
     smoke.py <tackle-binary> <transcript.json> [wait_seconds]
 
-Calls both tools before any editor is connected (expects the honest
-`no editor connected` error), then polls tackle_editor_state until the
-editor session answers or wait_seconds pass, then calls both tools for real.
+Calls all six tools plus two resource reads before any editor is connected
+(expects the honest `no editor connected` error), then polls
+tackle_editor_state until the editor session answers or wait_seconds pass,
+then calls every tool and resource for real, including one paginated
+hierarchy page and one gameobject-properties lookup.
 Writes every request, response and server stderr line to the transcript.
-Exit 0 only if both tools returned real data.
+Exit 0 only if every live call returned real data.
 """
 import json
 import queue
@@ -45,18 +47,35 @@ def main(binary, transcript_path, wait_s):
                 return response
         raise TimeoutError(label)
 
-    def tool(name, label):
+    def tool(name, label, arguments=None):
         next_id[0] += 1
         result = request({"jsonrpc": "2.0", "id": next_id[0], "method": "tools/call",
-                          "params": {"name": name, "arguments": {}}}, label)["result"]
+                          "params": {"name": name, "arguments": arguments or {}}}, label)["result"]
         return result.get("isError", False), result["content"][0]["text"]
+
+    def resource(uri, label):
+        next_id[0] += 1
+        response = request({"jsonrpc": "2.0", "id": next_id[0], "method": "resources/read",
+                            "params": {"uri": uri}}, label)
+        if "error" in response:
+            return True, json.dumps(response["error"])
+        contents = response["result"]["contents"]
+        return False, contents[0]["text"] if contents else ""
 
     request(INIT, "initialize")
     request({"jsonrpc": "2.0", "method": "notifications/initialized"}, "initialized")
     next_id[0] += 1
     request({"jsonrpc": "2.0", "id": next_id[0], "method": "tools/list"}, "tools/list")
+    next_id[0] += 1
+    request({"jsonrpc": "2.0", "id": next_id[0], "method": "resources/list"}, "resources/list")
     tool("tackle_editor_state", "editor_state before editor connects")
     tool("tackle_scene_hierarchy", "scene_hierarchy before editor connects")
+    tool("tackle_gameobject_properties", "gameobject_properties before editor connects",
+         {"path": "Ground"})
+    tool("tackle_console", "console before editor connects")
+    tool("tackle_project_info", "project_info before editor connects")
+    tool("tackle_selection", "selection before editor connects")
+    resource("tackle://editor/state", "resource state before editor connects")
     polls, connected, started = 0, False, time.time()
     while time.time() - started < wait_s:
         next_id[0] += 1
@@ -69,18 +88,37 @@ def main(binary, transcript_path, wait_s):
             connected = True
             break
         time.sleep(3)
-    state_error, state = tool("tackle_editor_state", "editor_state live")
-    tree_error, tree = tool("tackle_scene_hierarchy", "scene_hierarchy live")
+    live = {}
+    live["editor_state"] = tool("tackle_editor_state", "editor_state live")
+    live["scene_hierarchy"] = tool("tackle_scene_hierarchy", "scene_hierarchy live")
+    live["scene_hierarchy_page"] = tool(
+        "tackle_scene_hierarchy", "scene_hierarchy live page 2",
+        {"offset": 1, "limit": 2})
+    live["gameobject_properties"] = tool(
+        "tackle_gameobject_properties", "gameobject_properties live",
+        {"path": "Seraphine (factory)"})
+    live["gameobject_missing"] = tool(
+        "tackle_gameobject_properties", "gameobject_properties live missing",
+        {"path": "No Such Object"})
+    live["console"] = tool("tackle_console", "console live", {"max_entries": 10})
+    live["project_info"] = tool("tackle_project_info", "project_info live")
+    live["selection"] = tool("tackle_selection", "selection live")
+    live["resource_state"] = resource("tackle://editor/state", "resource state live")
+    live["resource_hierarchy"] = resource(
+        "tackle://editor/scene-hierarchy", "resource scene-hierarchy live")
     time.sleep(0.5)
     server.stdin.close()
     server.wait(timeout=10)
-    ok = connected and not state_error and not tree_error
+    # The missing-object lookup must fail honestly; everything else must pass.
+    errors = {name: error for name, (error, _text) in live.items() if error}
+    ok = connected and set(errors) == {"gameobject_missing"}
     with open(transcript_path, "w") as handle:
         json.dump({"ok": ok, "polls_until_connected": polls,
                    "seconds_until_connected": round(time.time() - started, 1),
+                   "live_errors": sorted(errors),
                    "exchanges": exchanges, "server_stderr": stderr_lines}, handle, indent=1)
-    print(f"connected={connected} after {polls} polls; editor_state error={state_error}; "
-          f"scene_hierarchy error={tree_error}; transcript {transcript_path}")
+    print(f"connected={connected} after {polls} polls; live errors={sorted(errors)}; "
+          f"transcript {transcript_path}")
     return 0 if ok else 1
 
 

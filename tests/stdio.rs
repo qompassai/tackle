@@ -60,7 +60,7 @@ fn by_id(output: &Output, id: u64) -> Value {
 }
 
 #[test]
-fn ok_identity_and_exactly_two_read_only_tools() {
+fn ok_identity_and_exactly_six_read_only_tools() {
     let state = tempfile::tempdir().expect("temp");
     let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
     let output = finish(
@@ -80,11 +80,92 @@ fn ok_identity_and_exactly_two_read_only_tools() {
         .map(|tool| tool["name"].as_str().expect("name"))
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["tackle_editor_state", "tackle_scene_hierarchy"]);
+    assert_eq!(
+        names,
+        [
+            "tackle_console",
+            "tackle_editor_state",
+            "tackle_gameobject_properties",
+            "tackle_project_info",
+            "tackle_scene_hierarchy",
+            "tackle_selection",
+        ]
+    );
     assert!(
         tools
             .iter()
             .all(|tool| tool["annotations"]["readOnlyHint"] == true)
+    );
+    // Parameterized tools carry real schemas: hierarchy pagination is
+    // optional, the gameobject path is required.
+    let hierarchy = tools
+        .iter()
+        .find(|tool| tool["name"] == "tackle_scene_hierarchy")
+        .expect("hierarchy tool");
+    // Option<i64> renders as ["integer", "null"] under schemars.
+    for field in ["offset", "limit"] {
+        let rendered = hierarchy["inputSchema"]["properties"][field]["type"].clone();
+        let accepts_integer = rendered == "integer"
+            || rendered
+                .as_array()
+                .is_some_and(|types| types.iter().any(|type_| type_ == "integer"));
+        assert!(accepts_integer, "{field} schema type: {rendered}");
+    }
+    assert!(
+        !hierarchy["inputSchema"]["required"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .any(|required| required == "offset" || required == "limit"),
+        "pagination must be optional: {}",
+        hierarchy["inputSchema"]
+    );
+    let properties = tools
+        .iter()
+        .find(|tool| tool["name"] == "tackle_gameobject_properties")
+        .expect("properties tool");
+    assert!(
+        properties["inputSchema"]["required"]
+            .as_array()
+            .expect("required")
+            .iter()
+            .any(|required| required == "path"),
+        "gameobject path must be required: {}",
+        properties["inputSchema"]
+    );
+}
+
+#[test]
+fn ok_resources_list_five_read_only_mirrors() {
+    let state = tempfile::tempdir().expect("temp");
+    let list = r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#;
+    let output = finish(
+        spawn(state.path(), free_port()),
+        &[INITIALIZE, INITIALIZED, list],
+    );
+    let resources = by_id(&output, 2)["result"]["resources"]
+        .as_array()
+        .expect("resources")
+        .clone();
+    let mut uris: Vec<&str> = resources
+        .iter()
+        .map(|resource| resource["uri"].as_str().expect("uri"))
+        .collect();
+    uris.sort_unstable();
+    assert_eq!(
+        uris,
+        [
+            "tackle://editor/console",
+            "tackle://editor/project-info",
+            "tackle://editor/scene-hierarchy",
+            "tackle://editor/selection",
+            "tackle://editor/state",
+        ]
+    );
+    assert!(
+        resources
+            .iter()
+            .all(|resource| resource["mimeType"] == "application/json")
     );
 }
 
@@ -106,19 +187,76 @@ fn ok_startup_publishes_capability_and_logs_without_token() {
 }
 
 #[test]
-fn adv_both_tools_report_no_editor_connected() {
+fn adv_all_tools_report_no_editor_connected() {
     let state = tempfile::tempdir().expect("temp");
-    let state_call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tackle_editor_state","arguments":{}}}"#;
-    let tree_call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{}}}"#;
-    let output = finish(
-        spawn(state.path(), free_port()),
-        &[INITIALIZE, INITIALIZED, state_call, tree_call],
-    );
-    for id in [2, 3] {
+    let calls = [
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tackle_editor_state","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tackle_gameobject_properties","arguments":{"path":"Ground"}}}"#,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tackle_console","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"tackle_project_info","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"tackle_selection","arguments":{}}}"#,
+    ];
+    let mut requests = vec![INITIALIZE, INITIALIZED];
+    requests.extend(calls);
+    let output = finish(spawn(state.path(), free_port()), &requests);
+    for id in 2..=7 {
         let result = &by_id(&output, id)["result"];
         assert_eq!(result["isError"], true);
         assert_eq!(result["content"][0]["text"], "no editor connected");
     }
+}
+
+#[test]
+fn adv_invalid_tool_arguments_rejected_before_any_editor_call() {
+    let state = tempfile::tempdir().expect("temp");
+    let calls = [
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{"limit":501}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{"offset":-1}}}"#,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tackle_console","arguments":{"max_entries":0}}}"#,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tackle_gameobject_properties","arguments":{"path":"Ground/"}}}"#,
+    ];
+    let mut requests = vec![INITIALIZE, INITIALIZED];
+    requests.extend(calls);
+    let output = finish(spawn(state.path(), free_port()), &requests);
+    for id in 2..=5 {
+        let result = &by_id(&output, id)["result"];
+        assert_eq!(result["isError"], true, "id {id}: {result}");
+    }
+    assert_eq!(
+        by_id(&output, 2)["result"]["content"][0]["text"],
+        "limit must be between 1 and 500"
+    );
+    assert_eq!(
+        by_id(&output, 3)["result"]["content"][0]["text"],
+        "offset must be >= 0"
+    );
+    assert_eq!(
+        by_id(&output, 5)["result"]["content"][0]["text"],
+        "path must not contain empty segments"
+    );
+}
+
+#[test]
+fn adv_resource_read_without_editor_is_a_protocol_error() {
+    let state = tempfile::tempdir().expect("temp");
+    let read = r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"tackle://editor/state"}}"#;
+    let unknown = r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"tackle://editor/nope"}}"#;
+    let output = finish(
+        spawn(state.path(), free_port()),
+        &[INITIALIZE, INITIALIZED, read, unknown],
+    );
+    let no_editor = &by_id(&output, 2)["error"];
+    assert_eq!(no_editor["code"], -32603);
+    assert!(
+        no_editor["message"]
+            .as_str()
+            .expect("message")
+            .contains("no editor connected"),
+        "{no_editor}"
+    );
+    let not_found = &by_id(&output, 3)["error"];
+    assert_eq!(not_found["code"], -32002);
 }
 
 #[test]
