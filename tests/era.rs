@@ -78,6 +78,46 @@ fn finish(child: Child, requests: &[String]) -> Vec<Value> {
         .collect()
 }
 
+/// Split a compact JSON array's text into its top-level object
+/// spans (brace-depth scan, string- and escape-aware).
+fn split_top_level_objects(array: &str) -> Vec<&str> {
+    let bytes = array.as_bytes();
+    let mut spans = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => {
+                if depth == 1 {
+                    start = index;
+                }
+                depth += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 1 {
+                    spans.push(&array[start..=index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
 fn by_id(frames: &[Value], id: u64) -> &Value {
     frames
         .iter()
@@ -101,6 +141,12 @@ fn ok_discover_advertises_only_the_modern_era() {
 
 #[test]
 fn ok_tools_list_is_byte_identical_to_the_u1_baseline() {
+    // B1 form of this gate: the whole array equalled the U1 fixture.
+    // B2 grows the surface to 18 tools, so the gate's durable form
+    // is per-entry: every U1 read definition appears verbatim in the
+    // served list (checked on the raw wire line, since a parsed
+    // Value would reorder object keys), and the full surface is the
+    // six reads plus the twelve U2 writes.
     let state = tempfile::tempdir().expect("temp");
     let lines = finish_raw(
         spawn(state.path()),
@@ -110,20 +156,78 @@ fn ok_tools_list_is_byte_identical_to_the_u1_baseline() {
         .iter()
         .find(|line| line.contains("\"id\":2"))
         .expect("tools/list response line");
-    // The baseline array bytes appear verbatim on the wire (a parsed
-    // Value would reorder object keys, so the check runs on the raw
-    // line), and the parsed surface deep-equals the baseline too.
-    let baseline = include_str!("fixtures/tools-list-u1.json").trim();
-    assert!(
-        line.contains(baseline),
-        "tools/list drifted from U1:\n{line}"
-    );
+    // The fixture's per-entry byte spans, cut from the fixture text
+    // itself (re-serializing a parsed Value would reorder keys).
+    let fixture = include_str!("fixtures/tools-list-u1.json").trim();
+    for entry_bytes in split_top_level_objects(fixture) {
+        assert!(
+            line.contains(entry_bytes),
+            "U1 tool definition drifted: {entry_bytes}"
+        );
+    }
     let frames: Vec<Value> = lines
         .iter()
         .map(|line| serde_json::from_str(line).expect("json"))
         .collect();
-    let expected: Value = serde_json::from_str(baseline).expect("fixture parses");
-    assert_eq!(by_id(&frames, 2)["result"]["tools"], expected);
+    let tools = by_id(&frames, 2)["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .clone();
+    let mut names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("name"))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "tackle_batch_execute",
+            "tackle_component_add",
+            "tackle_component_remove",
+            "tackle_console",
+            "tackle_editor_state",
+            "tackle_gameobject_create",
+            "tackle_gameobject_delete",
+            "tackle_gameobject_modify",
+            "tackle_gameobject_properties",
+            "tackle_prefab_instantiate",
+            "tackle_project_info",
+            "tackle_redo",
+            "tackle_scene_hierarchy",
+            "tackle_scene_save",
+            "tackle_script_create",
+            "tackle_script_patch",
+            "tackle_selection",
+            "tackle_undo",
+        ]
+    );
+    // Write tools are annotated as idempotent (the key is part of
+    // the call) and closed-world; readOnlyHint is the spec default
+    // (false) and is omitted rather than restated.
+    for write in [
+        "tackle_batch_execute",
+        "tackle_component_add",
+        "tackle_component_remove",
+        "tackle_gameobject_create",
+        "tackle_gameobject_delete",
+        "tackle_gameobject_modify",
+        "tackle_prefab_instantiate",
+        "tackle_redo",
+        "tackle_scene_save",
+        "tackle_script_create",
+        "tackle_script_patch",
+        "tackle_undo",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == write)
+            .expect("write tool present");
+        assert_eq!(
+            tool["annotations"]["idempotentHint"], true,
+            "{write} must carry idempotentHint"
+        );
+        assert_eq!(tool["annotations"]["openWorldHint"], false);
+    }
 }
 
 #[test]

@@ -204,14 +204,17 @@ fn checked_path(path: &str) -> Result<Value, String> {
     Ok(Value::Object(args))
 }
 
-#[derive(Clone)]
 pub struct TackleServer {
     bridge: Bridge,
+    writes: crate::writes::WriteCore,
 }
 
 impl TackleServer {
     pub fn new(bridge: Bridge) -> Self {
-        Self { bridge }
+        Self {
+            writes: crate::writes::WriteCore::new(bridge.clone()),
+            bridge,
+        }
     }
 
     async fn proxy(&self, command: &str) -> CallToolResult {
@@ -300,9 +303,15 @@ impl ServerHandler for TackleServer {
         info.server_info =
             Implementation::new("tackle", env!("CARGO_PKG_VERSION")).with_title("Tackle");
         info.instructions = Some(
-            "tackle — live game-editor broker. Stage U1 read core: six read-only tools and five \
-             read-only resources proxying to one authenticated Unity Editor session over a \
-             loopback WebSocket."
+            "tackle — live game-editor broker. Read core: six read-only tools and five read-only \
+             resources proxying to one authenticated Unity Editor session over a loopback \
+             WebSocket. Write core (U2): twelve write tools — undo-grouped GameObject, component \
+             and prefab mutations, atomic batch, scene save, undo/redo, and bounded-filesystem \
+             script create/patch with compile read-back. Every write tool requires an \
+             idempotency_key (1..=128 chars, [A-Za-z0-9._:-]): a retry with the same key and \
+             the same other arguments replays the original result without re-applying the \
+             mutation; the same key with different arguments is refused; failed calls are not \
+             recorded and may be retried under the same key."
                 .to_string(),
         );
         info
@@ -328,7 +337,12 @@ impl ServerHandler for TackleServer {
         if let Some(result) = self.dispatch_read(&request.name, &arguments).await {
             return Ok(result.into());
         }
-        Ok(text_result(format!("unknown tool: {}", request.name), true).into())
+        match self.writes.dispatch(&request.name, &arguments).await {
+            crate::writes::Outcome::Done(text, is_error) => Ok(text_result(text, is_error).into()),
+            crate::writes::Outcome::NotWrite => {
+                Ok(text_result(format!("unknown tool: {}", request.name), true).into())
+            }
+        }
     }
 
     async fn list_resources(

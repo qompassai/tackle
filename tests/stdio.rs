@@ -79,6 +79,9 @@ fn by_id(output: &Output, id: u64) -> Value {
 
 #[test]
 fn ok_identity_and_exactly_six_read_only_tools() {
+    // B1 asserted the whole surface here; since B2 the full-surface
+    // gate lives in tests/era.rs (18 tools, U1 entries byte-pinned).
+    // This test keeps the identity check and the read tools' shape.
     let state = tempfile::tempdir().expect("temp");
     let output = finish(
         spawn(state.path(), free_port()),
@@ -97,22 +100,34 @@ fn ok_identity_and_exactly_six_read_only_tools() {
         .map(|tool| tool["name"].as_str().expect("name"))
         .collect();
     names.sort_unstable();
-    assert_eq!(
-        names,
-        [
-            "tackle_console",
-            "tackle_editor_state",
-            "tackle_gameobject_properties",
-            "tackle_project_info",
-            "tackle_scene_hierarchy",
-            "tackle_selection",
-        ]
-    );
-    assert!(
-        tools
+    assert_eq!(names.len(), 18, "six reads plus the twelve U2 writes");
+    for read in [
+        "tackle_console",
+        "tackle_editor_state",
+        "tackle_gameobject_properties",
+        "tackle_project_info",
+        "tackle_scene_hierarchy",
+        "tackle_selection",
+    ] {
+        assert!(names.contains(&read), "{read} missing");
+    }
+    for read in [
+        "tackle_console",
+        "tackle_editor_state",
+        "tackle_gameobject_properties",
+        "tackle_project_info",
+        "tackle_scene_hierarchy",
+        "tackle_selection",
+    ] {
+        let tool = tools
             .iter()
-            .all(|tool| tool["annotations"]["readOnlyHint"] == true)
-    );
+            .find(|tool| tool["name"] == read)
+            .expect("read tool present");
+        assert_eq!(
+            tool["annotations"]["readOnlyHint"], true,
+            "{read} stays read-only"
+        );
+    }
     // Parameterized tools carry real schemas: hierarchy pagination is
     // optional, the gameobject path is required.
     let hierarchy = tools

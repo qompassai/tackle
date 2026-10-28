@@ -11,8 +11,11 @@
 pub mod bridge;
 pub mod capability;
 pub mod config;
+pub mod decide;
 pub mod guard;
+pub mod idempotency;
 pub mod server;
+pub mod writes;
 
 /// Write one server log line to stderr (stdout carries MCP only). Callers
 /// must never pass token material.

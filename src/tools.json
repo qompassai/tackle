@@ -1,5 +1,108 @@
 [
   {
+    "name": "tackle_batch_execute",
+    "description": "Apply 1..=32 undoable writes as one undo group, in order; the first failure rolls the whole batch back. Members: gameobject create/modify/delete, component add/remove, prefab instantiate.",
+    "inputSchema": {
+      "properties": {
+        "operations": {
+          "items": {
+            "properties": {
+              "arguments": {
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "arguments",
+              "name"
+            ],
+            "type": "object"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "type": "array"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operations",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "tackle_component_add",
+    "description": "Add a component (type full name, e.g. UnityEngine.BoxCollider) to a GameObject. Undo-grouped.",
+    "inputSchema": {
+      "properties": {
+        "component_type": {
+          "description": "Component type full name in the loaded assemblies.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Hierarchy path: non-empty, no empty segments, at most 1024 bytes.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "component_type",
+        "path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_component_remove",
+    "description": "Remove the first component of a type from a GameObject; the Transform cannot be removed. Undo-grouped.",
+    "inputSchema": {
+      "properties": {
+        "component_type": {
+          "description": "Component type full name in the loaded assemblies.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Hierarchy path: non-empty, no empty segments, at most 1024 bytes.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "component_type",
+        "path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "destructiveHint": true
+    }
+  },
+  {
     "name": "tackle_console",
     "description": "Read the connected Unity Editor's console entries, newest first: message, file, line, raw Unity LogEntry mode, identifier. max_entries is 1..500 (omit for the newest 100). Errors with `no editor connected` when no editor session is live.",
     "inputSchema": {
@@ -35,6 +138,146 @@
     }
   },
   {
+    "name": "tackle_gameobject_create",
+    "description": "Create a GameObject in the active scene, optionally under a parent path. Undo-grouped; returns its properties.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Object name: non-empty, at most 256 bytes, no `/`.",
+          "type": "string"
+        },
+        "parent_path": {
+          "description": "Parent path; omit for a scene root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_gameobject_delete",
+    "description": "Delete a GameObject and its children by hierarchy path. Undo-grouped: tackle_undo restores it.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Hierarchy path: non-empty, no empty segments, at most 1024 bytes.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "tackle_gameobject_modify",
+    "description": "Modify a GameObject by path: active, name, tag, layer (by name), local position, rotation (Euler degrees), scale. Only given fields change. Undo-grouped; returns its properties.",
+    "inputSchema": {
+      "properties": {
+        "active": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "layer_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Hierarchy path: non-empty, no empty segments, at most 1024 bytes.",
+          "type": "string"
+        },
+        "position": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "rotation_euler": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scale": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "tackle_gameobject_properties",
     "description": "Read one GameObject's properties from the connected Unity Editor by hierarchy path (e.g. `Seraphine (factory)/Hips`): active flags, tag, layer, local and world transform, component type names, child count. Errors with `no editor connected` when no editor session is live, and with a plain editor error when the path resolves to nothing.",
     "inputSchema": {
@@ -56,6 +299,38 @@
     }
   },
   {
+    "name": "tackle_prefab_instantiate",
+    "description": "Instantiate a prefab asset into the active scene, optionally under a parent path. Undo-grouped; returns the new object's properties.",
+    "inputSchema": {
+      "properties": {
+        "parent_path": {
+          "description": "Parent path; omit for a scene root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefab_path": {
+          "description": "Prefab asset path: starts with Assets/, ends .prefab.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prefab_path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "tackle_project_info",
     "description": "Read the connected Unity Editor's project info: product and company name, bundle version, Unity version, project name and path, active build target, active scene, build scenes with their enabled flags. Errors with `no editor connected` when no editor session is live.",
     "inputSchema": {
@@ -64,6 +339,26 @@
     },
     "annotations": {
       "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_redo",
+    "description": "Redo the last undone undo step; reports whether one was redone.",
+    "inputSchema": {
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
       "openWorldHint": false
     }
   },
@@ -100,6 +395,90 @@
     }
   },
   {
+    "name": "tackle_scene_save",
+    "description": "Save the active scene to its existing path; a never-saved scene is refused (tackle never invents a path).",
+    "inputSchema": {
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_script_create",
+    "description": "Create a C# script under Assets/ (must not exist). Bounded filesystem write (PROGRAM exception class). Recompiles; reports compiled + error CS diagnostics.",
+    "inputSchema": {
+      "properties": {
+        "contents": {
+          "description": "Full file contents, at most 65536 bytes.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path relative to Assets/, ending .cs; no empty, `.` or `..` segments.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contents",
+        "path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_script_patch",
+    "description": "Patch a C# script under Assets/: replace old_text (must match exactly once) with new_text. Bounded filesystem write (PROGRAM exception class). Recompiles; reports compiled + error CS diagnostics.",
+    "inputSchema": {
+      "properties": {
+        "new_text": {
+          "type": "string"
+        },
+        "old_text": {
+          "description": "Must occur exactly once.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path relative to Assets/, ending .cs; no empty, `.` or `..` segments.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "new_text",
+        "old_text",
+        "path",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "tackle_selection",
     "description": "Read the connected Unity Editor's current selection: selected GameObjects with name, hierarchy path and active flag, the active object name, and the count of selected non-GameObject objects. Errors with `no editor connected` when no editor session is live.",
     "inputSchema": {
@@ -108,6 +487,26 @@
     },
     "annotations": {
       "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_undo",
+    "description": "Undo the most recent undo step (a batch is one step); reports whether one was undone.",
+    "inputSchema": {
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key; semantics in the server instructions.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true,
       "openWorldHint": false
     }
   }

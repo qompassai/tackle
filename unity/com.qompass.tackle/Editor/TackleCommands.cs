@@ -1,8 +1,19 @@
 // Tackle commands. Main thread only: called from TackleBridge.Pump.
 //
 // Reply shape: {"id":N,"ok":true,"result":{...}} or {"id":N,"ok":false,"error":"..."}.
-// Every command is read-only. U1 commands: editor_state, scene_hierarchy
-// (paginated), gameobject_properties, console, project_info, selection.
+// U1 read commands: editor_state, scene_hierarchy (paginated),
+// gameobject_properties, console, project_info, selection.
+// U2 write commands: create_gameobject, modify_gameobject,
+// delete_gameobject, add_component, remove_component,
+// instantiate_prefab, save_scene, perform_undo, perform_redo,
+// batch_begin, batch_commit, batch_revert, asset_refresh.
+// Every write joins the editor undo stack: an op either opens its
+// own undo group (named after the command) or, with args.joinGroup,
+// joins the group batch_begin opened; batch_commit collapses that
+// group into a single undo step and batch_revert reverts it whole.
+// A mutation that cannot register with Undo does not exist here:
+// creates use RegisterCreatedObjectUndo, edits RecordObject,
+// deletes DestroyObjectImmediate.
 // Frames may carry an "args" object; absent numeric args read as 0, which
 // every command treats as "use the default" except where validation rejects it.
 
@@ -13,6 +24,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -42,6 +54,26 @@ namespace Tackle.Editor
             public long limit;
             public string path;
             public long maxEntries;
+            // U2 write fields. Strings are null when unset; the
+            // has* flags carry presence for the value fields.
+            public string name;
+            public string parentPath;
+            public string newName;
+            public string tag;
+            public string layerName;
+            public bool hasActive;
+            public bool active;
+            public bool hasPosition;
+            public Vector3 position;
+            public bool hasRotation;
+            public Vector3 rotation;
+            public bool hasScale;
+            public Vector3 scale;
+            public string componentType;
+            public string prefabPath;
+            public bool joinGroup;
+            public long group;
+            public string label;
         }
 
         [Serializable]
@@ -82,6 +114,32 @@ namespace Tackle.Editor
                         return Success(incoming.id, ProjectInfo());
                     case "selection":
                         return Success(incoming.id, SelectionInfo());
+                    case "create_gameobject":
+                        return Success(incoming.id, CreateGameObject(args));
+                    case "modify_gameobject":
+                        return Success(incoming.id, ModifyGameObject(args));
+                    case "delete_gameobject":
+                        return Success(incoming.id, DeleteGameObject(args));
+                    case "add_component":
+                        return Success(incoming.id, AddComponent(args));
+                    case "remove_component":
+                        return Success(incoming.id, RemoveComponent(args));
+                    case "instantiate_prefab":
+                        return Success(incoming.id, InstantiatePrefab(args));
+                    case "save_scene":
+                        return Success(incoming.id, SaveScene());
+                    case "perform_undo":
+                        return Success(incoming.id, PerformUndo());
+                    case "perform_redo":
+                        return Success(incoming.id, PerformRedo());
+                    case "batch_begin":
+                        return Success(incoming.id, BatchBegin(args));
+                    case "batch_commit":
+                        return Success(incoming.id, BatchCommit(args));
+                    case "batch_revert":
+                        return Success(incoming.id, BatchRevert(args));
+                    case "asset_refresh":
+                        return Success(incoming.id, AssetRefresh());
                     default:
                         return Failure(incoming.id, "unknown command `" + incoming.command + "`");
                 }
@@ -187,6 +245,11 @@ namespace Tackle.Editor
             var found = FindByPath(segments);
             if (found == null)
                 throw new InvalidOperationException("gameobject not found: " + path);
+            return PropertiesJson(found);
+        }
+
+        static string PropertiesJson(GameObject found)
+        {
             var transform = found.transform;
             var components = new StringBuilder();
             var all = found.GetComponents<Component>();
@@ -368,6 +431,262 @@ namespace Tackle.Editor
             json.Append(",\"otherSelectedCount\":").Append(others < 0 ? 0 : others);
             json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
             json.Append(",\"gameObjects\":[").Append(objects).Append("]");
+            return json.Append('}').ToString();
+        }
+
+        // ---- U2 write commands ----
+
+        /// Open a fresh undo group for one write, unless the op
+        /// joins a batch group (batch_begin already opened it).
+        static void BeginGroup(bool joinGroup, string label)
+        {
+            if (joinGroup)
+                return;
+            Undo.IncrementCurrentGroup();
+            Undo.SetCurrentGroupName(label);
+        }
+
+        static GameObject RequireByPath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                throw new ArgumentException("path is required");
+            var segments = path.Split('/');
+            foreach (var segment in segments)
+                if (string.IsNullOrEmpty(segment))
+                    throw new ArgumentException("path must not contain empty segments");
+            var found = FindByPath(segments);
+            if (found == null)
+                throw new InvalidOperationException("gameobject not found: " + path);
+            return found;
+        }
+
+        static string CreateGameObject(Args args)
+        {
+            if (string.IsNullOrEmpty(args.name))
+                throw new ArgumentException("name is required");
+            // Resolve the parent before anything exists: a refused
+            // create must leave no orphan object in the scene.
+            GameObject parent = null;
+            if (!string.IsNullOrEmpty(args.parentPath))
+                parent = RequireByPath(args.parentPath);
+            BeginGroup(args.joinGroup, "tackle: create_gameobject");
+            var created = new GameObject(args.name);
+            Undo.RegisterCreatedObjectUndo(created, "tackle: create_gameobject");
+            if (parent != null)
+                Undo.SetTransformParent(created.transform, parent.transform, "tackle: create_gameobject");
+            return PropertiesJson(created);
+        }
+
+        static string ModifyGameObject(Args args)
+        {
+            var target = RequireByPath(args.path);
+            // Validate everything fallible before any mutation: a
+            // refused modify must not leave earlier fields applied.
+            var layer = -1;
+            if (!string.IsNullOrEmpty(args.layerName))
+            {
+                layer = LayerMask.NameToLayer(args.layerName);
+                if (layer < 0)
+                    throw new ArgumentException("unknown layer: " + args.layerName);
+            }
+            if (!string.IsNullOrEmpty(args.tag)
+                && Array.IndexOf(UnityEditorInternal.InternalEditorUtility.tags, args.tag) < 0)
+                throw new ArgumentException("unknown tag: " + args.tag);
+            BeginGroup(args.joinGroup, "tackle: modify_gameobject");
+            if (args.hasActive)
+            {
+                Undo.RecordObject(target, "tackle: modify_gameobject");
+                target.SetActive(args.active);
+            }
+            if (!string.IsNullOrEmpty(args.newName))
+            {
+                Undo.RecordObject(target, "tackle: modify_gameobject");
+                target.name = args.newName;
+            }
+            if (!string.IsNullOrEmpty(args.tag))
+            {
+                Undo.RecordObject(target, "tackle: modify_gameobject");
+                target.tag = args.tag;
+            }
+            if (!string.IsNullOrEmpty(args.layerName))
+            {
+                Undo.RecordObject(target, "tackle: modify_gameobject");
+                target.layer = layer;
+            }
+            if (args.hasPosition || args.hasRotation || args.hasScale)
+            {
+                Undo.RecordObject(target.transform, "tackle: modify_gameobject");
+                if (args.hasPosition)
+                    target.transform.localPosition = args.position;
+                if (args.hasRotation)
+                    target.transform.localRotation = Quaternion.Euler(args.rotation);
+                if (args.hasScale)
+                    target.transform.localScale = args.scale;
+            }
+            return PropertiesJson(target);
+        }
+
+        static string DeleteGameObject(Args args)
+        {
+            var target = RequireByPath(args.path);
+            var path = FullPath(target.transform);
+            BeginGroup(args.joinGroup, "tackle: delete_gameobject");
+            Undo.DestroyObjectImmediate(target);
+            var json = new StringBuilder("{");
+            json.Append("\"deleted\":").Append(Quote(path));
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static Type ResolveComponentType(string fullName)
+        {
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type type;
+                try
+                {
+                    type = assembly.GetType(fullName);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                if (type == null)
+                    continue;
+                if (!typeof(Component).IsAssignableFrom(type))
+                    throw new ArgumentException("type is not a Component: " + fullName);
+                if (type.IsAbstract)
+                    throw new ArgumentException("component type is abstract: " + fullName);
+                return type;
+            }
+            throw new ArgumentException("component type not found: " + fullName);
+        }
+
+        static string AddComponent(Args args)
+        {
+            var target = RequireByPath(args.path);
+            var type = ResolveComponentType(args.componentType);
+            if (type == typeof(Transform))
+                throw new ArgumentException("cannot add the Transform component");
+            BeginGroup(args.joinGroup, "tackle: add_component");
+            var component = target.AddComponent(type);
+            if (component == null)
+                throw new InvalidOperationException("editor refused to add " + args.componentType);
+            Undo.RegisterCreatedObjectUndo(component, "tackle: add_component");
+            return PropertiesJson(target);
+        }
+
+        static string RemoveComponent(Args args)
+        {
+            var target = RequireByPath(args.path);
+            var type = ResolveComponentType(args.componentType);
+            if (type == typeof(Transform))
+                throw new ArgumentException("cannot remove the Transform component");
+            var component = target.GetComponent(type);
+            if (component == null)
+                throw new InvalidOperationException("component not present: " + args.componentType);
+            BeginGroup(args.joinGroup, "tackle: remove_component");
+            Undo.DestroyObjectImmediate(component);
+            return PropertiesJson(target);
+        }
+
+        static string InstantiatePrefab(Args args)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(args.prefabPath);
+            if (prefab == null)
+                throw new ArgumentException("prefab not found: " + args.prefabPath);
+            // Resolve the parent before instantiating, for the same
+            // reason as create_gameobject: no orphans on refusal.
+            GameObject parent = null;
+            if (!string.IsNullOrEmpty(args.parentPath))
+                parent = RequireByPath(args.parentPath);
+            BeginGroup(args.joinGroup, "tackle: instantiate_prefab");
+            var instance = PrefabUtility.InstantiatePrefab(prefab) as GameObject;
+            if (instance == null)
+                throw new InvalidOperationException("editor refused to instantiate " + args.prefabPath);
+            Undo.RegisterCreatedObjectUndo(instance, "tackle: instantiate_prefab");
+            if (parent != null)
+                Undo.SetTransformParent(instance.transform, parent.transform, "tackle: instantiate_prefab");
+            return PropertiesJson(instance);
+        }
+
+        static string SaveScene()
+        {
+            var scene = SceneManager.GetActiveScene();
+            if (string.IsNullOrEmpty(scene.path))
+                throw new InvalidOperationException("active scene has no path; save it once in the editor so tackle never invents one");
+            if (!EditorSceneManager.SaveScene(scene))
+                throw new InvalidOperationException("editor refused to save scene " + scene.path);
+            var json = new StringBuilder("{");
+            json.Append("\"path\":").Append(Quote(scene.path));
+            json.Append(",\"name\":").Append(Quote(scene.name));
+            json.Append(",\"saved\":true");
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static string PerformUndo()
+        {
+            var before = Undo.GetCurrentGroup();
+            Undo.PerformUndo();
+            var after = Undo.GetCurrentGroup();
+            var json = new StringBuilder("{");
+            json.Append("\"performed\":").Append(Bool(before != after));
+            json.Append(",\"groupBefore\":").Append(before);
+            json.Append(",\"groupAfter\":").Append(after);
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static string PerformRedo()
+        {
+            var before = Undo.GetCurrentGroup();
+            Undo.PerformRedo();
+            var after = Undo.GetCurrentGroup();
+            var json = new StringBuilder("{");
+            json.Append("\"performed\":").Append(Bool(before != after));
+            json.Append(",\"groupBefore\":").Append(before);
+            json.Append(",\"groupAfter\":").Append(after);
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static string BatchBegin(Args args)
+        {
+            Undo.IncrementCurrentGroup();
+            Undo.SetCurrentGroupName(string.IsNullOrEmpty(args.label) ? "tackle: batch" : args.label);
+            var json = new StringBuilder("{");
+            json.Append("\"group\":").Append(Undo.GetCurrentGroup());
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static string BatchCommit(Args args)
+        {
+            Undo.CollapseUndoOperations((int)args.group);
+            var json = new StringBuilder("{");
+            json.Append("\"group\":").Append(args.group);
+            json.Append(",\"collapsed\":true");
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static string BatchRevert(Args args)
+        {
+            Undo.RevertAllDownToGroup((int)args.group);
+            var json = new StringBuilder("{");
+            json.Append("\"group\":").Append(args.group);
+            json.Append(",\"reverted\":true");
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
+            return json.Append('}').ToString();
+        }
+
+        static string AssetRefresh()
+        {
+            AssetDatabase.Refresh();
+            var json = new StringBuilder("{");
+            json.Append("\"refreshed\":true");
+            json.Append(",\"onMainThread\":").Append(Bool(OnMainThread()));
             return json.Append('}').ToString();
         }
 
