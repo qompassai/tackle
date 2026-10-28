@@ -1,5 +1,10 @@
 //! The real binary over stdio: identity, tool surface, honest no-editor
 //! errors, refusal logging, fail-closed start.
+//!
+//! B1 (fleet D-113 standardization): sessions open with the modern
+//! `server/discover` handshake and every request carries its
+//! protocol version in `params._meta`; the legacy `initialize`
+//! handshake is refused by the era guard (tests/era.rs pins that).
 
 mod common;
 
@@ -12,8 +17,21 @@ use serde_json::Value;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
-const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
-const INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+/// The modern per-request metadata every frame carries.
+const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"test","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
+
+fn discover(id: u64) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"server/discover","params":{{{META}}}}}"#)
+}
+
+fn request(id: u64, method: &str, params: &str) -> String {
+    let params = if params.is_empty() {
+        META.to_string()
+    } else {
+        format!("{params},{META}")
+    };
+    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"{method}","params":{{{params}}}}}"#)
+}
 
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -31,7 +49,7 @@ fn spawn(state_dir: &Path, port: u16) -> Child {
         .expect("spawn tackle")
 }
 
-fn finish(mut child: Child, requests: &[&str]) -> Output {
+fn finish(mut child: Child, requests: &[String]) -> Output {
     {
         let mut stdin = child.stdin.take().expect("stdin");
         for request in requests {
@@ -62,12 +80,11 @@ fn by_id(output: &Output, id: u64) -> Value {
 #[test]
 fn ok_identity_and_exactly_six_read_only_tools() {
     let state = tempfile::tempdir().expect("temp");
-    let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
     let output = finish(
         spawn(state.path(), free_port()),
-        &[INITIALIZE, INITIALIZED, list],
+        &[discover(1), request(2, "tools/list", "")],
     );
-    let info = &by_id(&output, 1)["result"]["serverInfo"];
+    let info = &by_id(&output, 1)["result"]["_meta"]["io.modelcontextprotocol/serverInfo"];
     assert_eq!(info["name"], "tackle");
     assert_eq!(info["title"], "Tackle");
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
@@ -138,10 +155,9 @@ fn ok_identity_and_exactly_six_read_only_tools() {
 #[test]
 fn ok_resources_list_five_read_only_mirrors() {
     let state = tempfile::tempdir().expect("temp");
-    let list = r#"{"jsonrpc":"2.0","id":2,"method":"resources/list"}"#;
     let output = finish(
         spawn(state.path(), free_port()),
-        &[INITIALIZE, INITIALIZED, list],
+        &[discover(1), request(2, "resources/list", "")],
     );
     let resources = by_id(&output, 2)["result"]["resources"]
         .as_array()
@@ -173,7 +189,7 @@ fn ok_resources_list_five_read_only_mirrors() {
 fn ok_startup_publishes_capability_and_logs_without_token() {
     let state = tempfile::tempdir().expect("temp");
     let port = free_port();
-    let output = finish(spawn(state.path(), port), &[INITIALIZE]);
+    let output = finish(spawn(state.path(), port), &[discover(1)]);
     let file = state.path().join("capability/editor.json");
     let body: Value =
         serde_json::from_str(&std::fs::read_to_string(file).expect("file")).expect("json");
@@ -189,16 +205,21 @@ fn ok_startup_publishes_capability_and_logs_without_token() {
 #[test]
 fn adv_all_tools_report_no_editor_connected() {
     let state = tempfile::tempdir().expect("temp");
-    let calls = [
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tackle_editor_state","arguments":{}}}"#,
-        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{}}}"#,
-        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tackle_gameobject_properties","arguments":{"path":"Ground"}}}"#,
-        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tackle_console","arguments":{}}}"#,
-        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"tackle_project_info","arguments":{}}}"#,
-        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"tackle_selection","arguments":{}}}"#,
-    ];
-    let mut requests = vec![INITIALIZE, INITIALIZED];
-    requests.extend(calls);
+    let mut requests = vec![discover(1)];
+    for (id, name, arguments) in [
+        (2, "tackle_editor_state", "{}"),
+        (3, "tackle_scene_hierarchy", "{}"),
+        (4, "tackle_gameobject_properties", r#"{"path":"Ground"}"#),
+        (5, "tackle_console", "{}"),
+        (6, "tackle_project_info", "{}"),
+        (7, "tackle_selection", "{}"),
+    ] {
+        requests.push(request(
+            id,
+            "tools/call",
+            &format!(r#""name":"{name}","arguments":{arguments}"#),
+        ));
+    }
     let output = finish(spawn(state.path(), free_port()), &requests);
     for id in 2..=7 {
         let result = &by_id(&output, id)["result"];
@@ -210,14 +231,19 @@ fn adv_all_tools_report_no_editor_connected() {
 #[test]
 fn adv_invalid_tool_arguments_rejected_before_any_editor_call() {
     let state = tempfile::tempdir().expect("temp");
-    let calls = [
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{"limit":501}}}"#,
-        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tackle_scene_hierarchy","arguments":{"offset":-1}}}"#,
-        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tackle_console","arguments":{"max_entries":0}}}"#,
-        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"tackle_gameobject_properties","arguments":{"path":"Ground/"}}}"#,
-    ];
-    let mut requests = vec![INITIALIZE, INITIALIZED];
-    requests.extend(calls);
+    let mut requests = vec![discover(1)];
+    for (id, name, arguments) in [
+        (2, "tackle_scene_hierarchy", r#"{"limit":501}"#),
+        (3, "tackle_scene_hierarchy", r#"{"offset":-1}"#),
+        (4, "tackle_console", r#"{"max_entries":0}"#),
+        (5, "tackle_gameobject_properties", r#"{"path":"Ground/"}"#),
+    ] {
+        requests.push(request(
+            id,
+            "tools/call",
+            &format!(r#""name":"{name}","arguments":{arguments}"#),
+        ));
+    }
     let output = finish(spawn(state.path(), free_port()), &requests);
     for id in 2..=5 {
         let result = &by_id(&output, id)["result"];
@@ -240,12 +266,12 @@ fn adv_invalid_tool_arguments_rejected_before_any_editor_call() {
 #[test]
 fn adv_resource_read_without_editor_is_a_protocol_error() {
     let state = tempfile::tempdir().expect("temp");
-    let read = r#"{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"tackle://editor/state"}}"#;
-    let unknown = r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"tackle://editor/nope"}}"#;
-    let output = finish(
-        spawn(state.path(), free_port()),
-        &[INITIALIZE, INITIALIZED, read, unknown],
-    );
+    let requests = vec![
+        discover(1),
+        request(2, "resources/read", r#""uri":"tackle://editor/state""#),
+        request(3, "resources/read", r#""uri":"tackle://editor/nope""#),
+    ];
+    let output = finish(spawn(state.path(), free_port()), &requests);
     let no_editor = &by_id(&output, 2)["error"];
     assert_eq!(no_editor["code"], -32603);
     assert!(
@@ -255,8 +281,19 @@ fn adv_resource_read_without_editor_is_a_protocol_error() {
             .contains("no editor connected"),
         "{no_editor}"
     );
+    // Era delta (B1): U1 answered unknown resources with -32002
+    // (RESOURCE_NOT_FOUND); the modern era reassigns that condition
+    // to -32602 (INVALID_PARAMS) and rmcp 3.8's handler performs the
+    // rewrite for 2026-07-28 peers. The message text is unchanged.
     let not_found = &by_id(&output, 3)["error"];
-    assert_eq!(not_found["code"], -32002);
+    assert_eq!(not_found["code"], -32602);
+    assert!(
+        not_found["message"]
+            .as_str()
+            .expect("message")
+            .contains("unknown resource"),
+        "{not_found}"
+    );
 }
 
 #[test]
@@ -302,7 +339,7 @@ fn adv_port_in_use_refuses_to_start_and_publishes_nothing() {
     let state = tempfile::tempdir().expect("temp");
     let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = holder.local_addr().expect("address").port();
-    let output = finish(spawn(state.path(), port), &[INITIALIZE]);
+    let output = finish(spawn(state.path(), port), &[discover(1)]);
     assert!(!output.status.success());
     assert!(
         output.stdout.is_empty(),

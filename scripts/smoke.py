@@ -3,6 +3,8 @@
 
     smoke.py <tackle-binary> <transcript.json> [wait_seconds]
 
+Modern era (B1): the session opens with `server/discover` and every
+request carries its protocol version in `params._meta`.
 Calls all six tools plus two resource reads before any editor is connected
 (expects the honest `no editor connected` error), then polls
 tackle_editor_state until the editor session answers or wait_seconds pass,
@@ -18,9 +20,11 @@ import sys
 import threading
 import time
 
-INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "tackle-smoke", "version": "0"}}}
+META = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "tackle-smoke", "version": "0"},
+        "io.modelcontextprotocol/clientCapabilities": {}}
+DISCOVER = {"jsonrpc": "2.0", "id": 1, "method": "server/discover",
+            "params": {"_meta": META}}
 CALL_DEADLINE_S = 30
 
 
@@ -50,24 +54,26 @@ def main(binary, transcript_path, wait_s):
     def tool(name, label, arguments=None):
         next_id[0] += 1
         result = request({"jsonrpc": "2.0", "id": next_id[0], "method": "tools/call",
-                          "params": {"name": name, "arguments": arguments or {}}}, label)["result"]
+                          "params": {"name": name, "arguments": arguments or {},
+                                     "_meta": META}}, label)["result"]
         return result.get("isError", False), result["content"][0]["text"]
 
     def resource(uri, label):
         next_id[0] += 1
         response = request({"jsonrpc": "2.0", "id": next_id[0], "method": "resources/read",
-                            "params": {"uri": uri}}, label)
+                            "params": {"uri": uri, "_meta": META}}, label)
         if "error" in response:
             return True, json.dumps(response["error"])
         contents = response["result"]["contents"]
         return False, contents[0]["text"] if contents else ""
 
-    request(INIT, "initialize")
-    request({"jsonrpc": "2.0", "method": "notifications/initialized"}, "initialized")
+    request(DISCOVER, "server/discover")
     next_id[0] += 1
-    request({"jsonrpc": "2.0", "id": next_id[0], "method": "tools/list"}, "tools/list")
+    request({"jsonrpc": "2.0", "id": next_id[0], "method": "tools/list",
+             "params": {"_meta": META}}, "tools/list")
     next_id[0] += 1
-    request({"jsonrpc": "2.0", "id": next_id[0], "method": "resources/list"}, "resources/list")
+    request({"jsonrpc": "2.0", "id": next_id[0], "method": "resources/list",
+             "params": {"_meta": META}}, "resources/list")
     tool("tackle_editor_state", "editor_state before editor connects")
     tool("tackle_scene_hierarchy", "scene_hierarchy before editor connects")
     tool("tackle_gameobject_properties", "gameobject_properties before editor connects",
@@ -81,7 +87,8 @@ def main(binary, transcript_path, wait_s):
         next_id[0] += 1
         polls += 1
         server.stdin.write(json.dumps({"jsonrpc": "2.0", "id": next_id[0], "method": "tools/call",
-                                       "params": {"name": "tackle_editor_state", "arguments": {}}}) + "\n")
+                                       "params": {"name": "tackle_editor_state", "arguments": {},
+                                                  "_meta": META}}) + "\n")
         server.stdin.flush()
         response = json.loads(stdout.get(timeout=CALL_DEADLINE_S))
         if not response["result"].get("isError"):

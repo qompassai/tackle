@@ -3,13 +3,16 @@
 //! Stage U1 (read core): fail-closed environment config ([`config`]), the
 //! per-run capability token and its private file ([`capability`]), and the
 //! loopback WebSocket bridge holding one authenticated editor session
-//! ([`bridge`]). The MCP transport lives in the binary.
+//! ([`bridge`]). The MCP transport lives in the binary: a byte-level
+//! protocol-era [`guard`] in front of the rmcp handler in [`server`].
 
 #![forbid(unsafe_code)]
 
 pub mod bridge;
 pub mod capability;
 pub mod config;
+pub mod guard;
+pub mod server;
 
 /// Write one server log line to stderr (stdout carries MCP only). Callers
 /// must never pass token material.

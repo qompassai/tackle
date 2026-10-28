@@ -1,0 +1,114 @@
+[
+  {
+    "name": "tackle_console",
+    "description": "Read the connected Unity Editor's console entries, newest first: message, file, line, raw Unity LogEntry mode, identifier. max_entries is 1..500 (omit for the newest 100). Errors with `no editor connected` when no editor session is live.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "max_entries": {
+          "default": null,
+          "description": "Entries to return, newest first, 1..=500.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_editor_state",
+    "description": "Read the connected Unity Editor's state: Unity version, project name and path, active scene name and path, isPlaying, isCompiling, editor command queue depth. Errors with `no editor connected` when no editor session is live.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_gameobject_properties",
+    "description": "Read one GameObject's properties from the connected Unity Editor by hierarchy path (e.g. `Seraphine (factory)/Hips`): active flags, tag, layer, local and world transform, component type names, child count. Errors with `no editor connected` when no editor session is live, and with a plain editor error when the path resolves to nothing.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "path": {
+          "description": "Hierarchy path; non-empty, no empty segments, at most 1024 bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_project_info",
+    "description": "Read the connected Unity Editor's project info: product and company name, bundle version, Unity version, project name and path, active build target, active scene, build scenes with their enabled flags. Errors with `no editor connected` when no editor session is live.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_scene_hierarchy",
+    "description": "Read the active scene's GameObject hierarchy from the connected Unity Editor, preorder: name, active flag, child count, depth. Paginated: offset is zero-based, limit is 1..500 (omit both for the first page at the editor ceiling of depth 4 and 500 nodes); totalCount and truncation are reported. Errors with `no editor connected` when no editor session is live.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "limit": {
+          "default": null,
+          "description": "Nodes per page, 1..=500. Omit for the editor default (500).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "default": null,
+          "description": "Zero-based offset into the preorder node list. Must be >= 0.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "tackle_selection",
+    "description": "Read the connected Unity Editor's current selection: selected GameObjects with name, hierarchy path and active flag, the active object name, and the count of selected non-GameObject objects. Errors with `no editor connected` when no editor session is live.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": false
+    }
+  }
+]
