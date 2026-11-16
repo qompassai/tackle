@@ -1,0 +1,22 @@
+[package]
+name = "tackle-tui"
+version = "0.1.0"
+edition = "2024"
+description = "tackle-tui — Unity-editor broker console for tackle (fleet TUI pattern, D-1562 rung 1): U1 reads in plan/auto, U2 writes plan-mode only"
+
+[[bin]]
+name = "tackle-tui"
+path = "src/main.rs"
+
+[dependencies]
+# The member's own library: tool definitions as served data and the
+# decide() classification the mode gate mirrors.
+tackle = { path = "../.." }
+serde_json = "1"
+# ratatui + crossterm: the fleet TUI pattern's only UI deps (phlow
+# precedent). Panels are pure constructors; tests use TestBackend.
+ratatui = "0.29"
+crossterm = "0.29"
+
+[lints.rust]
+unsafe_code = "forbid"

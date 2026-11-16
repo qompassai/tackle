@@ -1,0 +1,8 @@
+# tackle-tui trigger rules (DESIGN SS D4).
+#
+# Rung 1 ships NO outbound rules: this file intentionally carries
+# zero [[rule]] entries, so nothing can fire. Rules added later are
+# data, listed in the Fleet panel with their enable state, and every
+# evaluation/firing/refusal/drop is written to the trigger audit.
+# Consequential target tools may only fire in plan mode unless the
+# target member's own decide()-class gate authorizes the call.
