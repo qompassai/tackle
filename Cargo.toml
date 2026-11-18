@@ -1,7 +1,8 @@
 [package]
-name = "tackle"
+name = "tackle-mcp"
 version = "0.3.0"
 edition = "2024"
+license = "Apache-2.0"
 description = "Tackle - live game-editor broker as an MCP stdio server (U1 read core, U2 write core)"
 
 [dependencies]
@@ -23,3 +24,14 @@ unsafe_code = "forbid"
 
 [dev-dependencies]
 tempfile = "3"
+
+# The library and binary keep the pre-rename name: consumers link
+# `tackle::` and the installed binary is `tackle` (the package was
+# renamed to tackle-mcp for crates.io, whose bare `tackle` is taken).
+[lib]
+name = "tackle"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tackle"
+path = "src/main.rs"
